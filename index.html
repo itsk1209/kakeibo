@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0d0d2b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="家計簿">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>家計簿 - 25日起算</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;padding:0;background:#0a0a1a;color:#e0e0ff;font-family:'Noto Sans JP','Hiragino Sans',sans-serif;min-height:100vh;overscroll-behavior:none}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{background:#2d2d4e;border-radius:2px}
+input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.8)}
+select option{background:#1a1a2e}
+input,select,button{font-family:'Noto Sans JP','Hiragino Sans',sans-serif}
+#app{min-height:100vh}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ==================== STORAGE (localStorage for PWA) ====================
+const storage = {
+  get: (key) => { try { const v = localStorage.getItem(key); return v ? { value: v } : null; } catch { return null; } },
+  set: (key, value) => { try { localStorage.setItem(key, value); return true; } catch { return false; } },
+};
+
+// ==================== UTILS ====================
+function getWeekPeriods(baseYear, baseMonth) {
+  const periods = [];
+  let cursor = new Date(baseYear, baseMonth, 25);
+  const nextMonth = baseMonth === 11 ? 0 : baseMonth + 1;
+  const nextYear  = baseMonth === 11 ? baseYear + 1 : baseYear;
+  const endDate   = new Date(nextYear, nextMonth, 24);
+  for (let w = 0; w < 5; w++) {
+    const start = new Date(cursor);
+    let end = new Date(cursor);
+    end.setDate(end.getDate() + 6);
+    if (end > endDate) end = new Date(endDate);
+    periods.push({ start, end });
+    cursor.setDate(cursor.getDate() + 7);
+    if (cursor > endDate) break;
+  }
+  return periods;
+}
+function formatDate(d) { return `${d.getMonth()+1}/${d.getDate()}`; }
+function dateKey(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+function getDatesInRange(start, end) {
+  const dates = []; let cur = new Date(start);
+  while (cur <= end) { dates.push(new Date(cur)); cur.setDate(cur.getDate()+1); }
+  return dates;
+}
+function getCycleLabel(year, month) {
+  const nm = month===11?0:month+1; const ny = month===11?year+1:year;
+  return `${year}年${month+1}月25日〜${ny}年${nm+1}月24日`;
+}
+
+// ==================== DEFAULTS ====================
+const DEFAULT_FIXED = [
+  {id:"fc1", name:"家賃",             category:"住居費", day:25,   amount:80000},
+  {id:"fc2", name:"返済",             category:"ローン", day:25,   amount:30000},
+  {id:"fc3", name:"携帯",             category:"通信費", day:10,   amount:8000},
+  {id:"fc4", name:"定期代",           category:"交通費", day:10,   amount:12000},
+  {id:"fc5", name:"クレカ決済（固定）", category:"その他", day:10,  amount:0, hasBreakdown:true},
+  {id:"fc5b",name:"クレカ決済（臨時）", category:"その他", day:10,  amount:0, hasBreakdown:true},
+  {id:"fc6", name:"ヘアカット",       category:"美容費", day:null, amount:4000},
+  {id:"fc7", name:"眉毛サロン",       category:"美容費", day:null, amount:3000},
+  {id:"fc8", name:"脱毛",             category:"美容費", day:null, amount:5000},
+  {id:"fc9", name:"保険",             category:"保険",   day:null, amount:15000},
+  {id:"fc10",name:"体メンテ",         category:"健康費", day:null, amount:8000},
+];
+const CAT_COLORS = {"住居費":"#e74c3c","ローン":"#c0392b","通信費":"#3498db","交通費":"#2980b9","美容費":"#e91e63","保険":"#9b59b6","健康費":"#27ae60","食費":"#f39c12","娯楽費":"#1abc9c","その他":"#95a5a6"};
+const ALL_CATS     = Object.keys(CAT_COLORS);
+const EXPENSE_CATS = ["食費","外食費","交通費","日用品","娯楽費","医療費","衣服費","その他"];
+
+// ==================== COMPONENTS ====================
+function Modal({open, onClose, title, children}) {
+  if (!open) return null;
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,zIndex:1000,background:"rgba(0,0,0,0.75)",display:"flex",alignItems:"center",justifyContent:"center",padding:"16px"}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#1a1a2e",border:"1px solid #2d2d4e",borderRadius:"16px",padding:"24px",maxWidth:"500px",width:"100%",maxHeight:"88vh",overflowY:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.6)"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"20px"}}>
+          <h3 style={{margin:0,color:"#e0e0ff",fontSize:"17px"}}>{title}</h3>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#888",fontSize:"22px",cursor:"pointer",lineHeight:1,padding:"4px 8px"}}>✕</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Field({label, value, onChange, type="text", placeholder}) {
+  return (
+    <div style={{marginBottom:"14px"}}>
+      <label style={{display:"block",color:"#a0a0c0",fontSize:"12px",marginBottom:"6px"}}>{label}</label>
+      <input type={type} value={value} onChange={e=>onChange(e.target.value)} placeholder={placeholder}
+        style={{width:"100%",background:"#0d0d1a",border:"1px solid #2d2d4e",borderRadius:"8px",padding:"12px",color:"#e0e0ff",fontSize:"16px",outline:"none"}}/>
+    </div>
+  );
+}
+
+function SelField({label, value, onChange, options}) {
+  return (
+    <div style={{marginBottom:"14px"}}>
+      <label style={{display:"block",color:"#a0a0c0",fontSize:"12px",marginBottom:"6px"}}>{label}</label>
+      <select value={value} onChange={e=>onChange(e.target.value)}
+        style={{width:"100%",background:"#0d0d1a",border:"1px solid #2d2d4e",borderRadius:"8px",padding:"12px",color:"#e0e0ff",fontSize:"16px"}}>
+        {options.map(o=><option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+
+// ==================== MAIN APP ====================
+function KakeiboApp() {
+  const today = new Date();
+  const initY = today.getDate()>=25?today.getFullYear():(today.getMonth()===0?today.getFullYear()-1:today.getFullYear());
+  const initM = today.getDate()>=25?today.getMonth():(today.getMonth()===0?11:today.getMonth()-1);
+
+  const [cy, setCy] = useState(initY);
+  const [cm, setCm] = useState(initM);
+  const cycleKey = `kc_${cy}_${cm}`;
+  const dailyKey = `kd_${cy}_${cm}`;
+
+  const [dailyData,  setDailyData]  = useState({});
+  const [fixedCosts, setFixedCosts] = useState(DEFAULT_FIXED);
+  const [cycleStore, setCycleStore] = useState({});
+  const [memos,      setMemos]      = useState([]);
+  const [activeTab,  setActiveTab]  = useState("weekly");
+
+  const [modalAddExp,    setModalAddExp]    = useState(false);
+  const [modalAddFixed,  setModalAddFixed]  = useState(false);
+  const [modalEditFixed, setModalEditFixed] = useState(null);
+  const [modalAddTemp,   setModalAddTemp]   = useState(false);
+  const [modalOverride,  setModalOverride]  = useState(null);
+  const [modalAddMemo,   setModalAddMemo]   = useState(false);
+  const [selectedDate,   setSelectedDate]   = useState(null);
+  const [expandedBD,     setExpandedBD]     = useState({});
+
+  const [fExp,  setFExp]  = useState({date:"",amount:"",category:"食費",note:"",isBudget:false});
+  const [fFixed,setFFixed]= useState({name:"",category:"その他",day:"",amount:"",hasBreakdown:false});
+  const [fEdit, setFEdit] = useState({name:"",category:"その他",day:"",amount:"",hasBreakdown:false});
+  const [fTemp, setFTemp] = useState({name:"",category:"その他",day:"",amount:""});
+  const [fOver, setFOver] = useState("");
+  const [fMemo, setFMemo] = useState({date:"",title:"",amount:"",note:""});
+  const [fBD,   setFBD]   = useState({fcId:null,name:"",amount:""});
+
+  // load
+  useEffect(()=>{
+    try{const r=storage.get(dailyKey); if(r) setDailyData(JSON.parse(r.value)); else setDailyData({});}catch{setDailyData({});}
+    try{const r=storage.get("kf");     if(r) setFixedCosts(JSON.parse(r.value));}catch{}
+    try{const r=storage.get("kcs");    if(r) setCycleStore(JSON.parse(r.value));}catch{}
+    try{const r=storage.get("km");     if(r) setMemos(JSON.parse(r.value));}catch{}
+  },[dailyKey]);
+
+  const saveDaily  = (d)=>{ setDailyData(d);  storage.set(dailyKey,JSON.stringify(d)); };
+  const saveFixed  = (d)=>{ setFixedCosts(d); storage.set("kf",JSON.stringify(d));    };
+  const saveCycle  = (d)=>{ setCycleStore(d); storage.set("kcs",JSON.stringify(d));   };
+  const saveMemos  = (d)=>{ setMemos(d);      storage.set("km",JSON.stringify(d));    };
+
+  const thisCycle   = cycleStore[cycleKey] || {overrides:{},tempItems:[],breakdowns:{}};
+  const updateCycle = (patch) => saveCycle({...cycleStore,[cycleKey]:{...thisCycle,...patch}});
+
+  const getBDItems = (id) => (thisCycle.breakdowns||{})[id]||[];
+  const getBDTotal = (id) => { const its=getBDItems(id); return its.length?its.reduce((s,b)=>s+Number(b.amount),0):null; };
+  const addBDItem  = (id,item) => updateCycle({breakdowns:{...(thisCycle.breakdowns||{}),[id]:[...getBDItems(id),item]}});
+  const delBDItem  = (id,bid)  => updateCycle({breakdowns:{...(thisCycle.breakdowns||{}),[id]:getBDItems(id).filter(b=>b.id!==bid)}});
+
+  const setOvr   = (id,patch) => updateCycle({overrides:{...thisCycle.overrides,[id]:{...(thisCycle.overrides[id]||{}),...patch}}});
+  const clearOvr = (id) => { const o={...thisCycle.overrides}; delete o[id]; updateCycle({overrides:o}); };
+
+  const effectiveFixed = [
+    ...fixedCosts.filter(f=>!thisCycle.overrides[f.id]?.hidden).map(f=>{
+      const ov=thisCycle.overrides[f.id]?.amount;
+      const bdt=f.hasBreakdown?getBDTotal(f.id):null;
+      return {...f, amount:bdt!==null?bdt:(ov??f.amount), isOverridden:ov!==undefined};
+    }),
+    ...(thisCycle.tempItems||[]).map(t=>({...t,isTemp:true})),
+  ];
+  const fixedTotal = effectiveFixed.reduce((s,f)=>s+Number(f.amount),0);
+
+  const periods       = getWeekPeriods(cy,cm);
+  const allCycleDates = periods.flatMap(p=>getDatesInRange(p.start,p.end));
+  const getActual = dk=>(dailyData[dk]?.expenses||[]).reduce((s,e)=>s+Number(e.amount),0);
+  const getBudget = dk=>dailyData[dk]?.budget||0;
+  const cycleTotal  = allCycleDates.reduce((s,d)=>s+getActual(dateKey(d)),0);
+  const cycleBudget = allCycleDates.reduce((s,d)=>s+getBudget(dateKey(d)),0);
+
+  const prevCycle=()=>{if(cm===0){setCy(y=>y-1);setCm(11);}else setCm(m=>m-1);};
+  const nextCycle=()=>{if(cm===11){setCy(y=>y+1);setCm(0);}else setCm(m=>m+1);};
+
+  const handleAddExp=()=>{
+    const dk=fExp.date; if(!dk||!fExp.amount) return;
+    const nd={...dailyData}; if(!nd[dk]) nd[dk]={expenses:[],budget:0};
+    if(fExp.isBudget) nd[dk].budget=Number(fExp.amount);
+    else nd[dk].expenses=[...(nd[dk].expenses||[]),{id:Date.now(),amount:Number(fExp.amount),category:fExp.category,note:fExp.note}];
+    saveDaily(nd); setFExp({date:"",amount:"",category:"食費",note:"",isBudget:false}); setModalAddExp(false);
+  };
+  const handleDelExp=(dk,id)=>{const nd={...dailyData};if(nd[dk])nd[dk].expenses=nd[dk].expenses.filter(e=>e.id!==id);saveDaily(nd);};
+  const handleAddFixed=()=>{
+    if(!fFixed.name||!fFixed.amount) return;
+    saveFixed([...fixedCosts,{id:`fc${Date.now()}`,name:fFixed.name,category:fFixed.category,day:fFixed.day?Number(fFixed.day):null,amount:Number(fFixed.amount),hasBreakdown:fFixed.hasBreakdown}]);
+    setFFixed({name:"",category:"その他",day:"",amount:"",hasBreakdown:false}); setModalAddFixed(false);
+  };
+  const handleDelFixed  = id=>saveFixed(fixedCosts.filter(f=>f.id!==id));
+  const handleOpenEdit  = f=>{setFEdit({name:f.name,category:f.category,day:f.day!=null?String(f.day):"",amount:String(f.amount),hasBreakdown:f.hasBreakdown||false});setModalEditFixed(f);};
+  const handleUpdateFixed=()=>{
+    if(!fEdit.name||!fEdit.amount) return;
+    saveFixed(fixedCosts.map(f=>f.id===modalEditFixed.id?{...f,name:fEdit.name,category:fEdit.category,day:fEdit.day?Number(fEdit.day):null,amount:Number(fEdit.amount),hasBreakdown:fEdit.hasBreakdown}:f));
+    setModalEditFixed(null);
+  };
+  const handleAddTemp=()=>{
+    if(!fTemp.name||!fTemp.amount) return;
+    updateCycle({tempItems:[...(thisCycle.tempItems||[]),{id:`tmp${Date.now()}`,name:fTemp.name,category:fTemp.category,day:fTemp.day?Number(fTemp.day):null,amount:Number(fTemp.amount)}]});
+    setFTemp({name:"",category:"その他",day:"",amount:""}); setModalAddTemp(false);
+  };
+  const handleDelTemp    = id=>updateCycle({tempItems:(thisCycle.tempItems||[]).filter(t=>t.id!==id)});
+  const handleSaveOverride=()=>{if(!modalOverride)return;fOver===""?clearOvr(modalOverride.id):setOvr(modalOverride.id,{amount:Number(fOver)});setModalOverride(null);setFOver("");};
+  const toggleHidden     = (id,cur)=>cur?clearOvr(id):setOvr(id,{hidden:true});
+  const handleAddMemo    = ()=>{if(!fMemo.date||!fMemo.title)return;saveMemos([...memos,{id:Date.now(),...fMemo}]);setFMemo({date:"",title:"",amount:"",note:""});setModalAddMemo(false);};
+  const handleDelMemo    = id=>saveMemos(memos.filter(m=>m.id!==id));
+  const handleAddBD      = fcId=>{if(!fBD.name||!fBD.amount)return;addBDItem(fcId,{id:`bd${Date.now()}`,name:fBD.name,amount:Number(fBD.amount)});setFBD({fcId:null,name:"",amount:""});};
+
+  const todayKey    = dateKey(today);
+  const futureMemos = memos.filter(m=>m.date>=todayKey).sort((a,b)=>a.date.localeCompare(b.date));
+  const pastMemos   = memos.filter(m=>m.date< todayKey).sort((a,b)=>b.date.localeCompare(a.date));
+
+  const ccFBD=getBDItems("fc5"); const ccTBD=getBDItems("fc5b");
+  const ccFHid=thisCycle.overrides["fc5"]?.hidden; const ccTHid=thisCycle.overrides["fc5b"]?.hidden;
+  const ccFSum=ccFBD.reduce((s,b)=>s+Number(b.amount),0); const ccTSum=ccTBD.reduce((s,b)=>s+Number(b.amount),0);
+  const ccTot=(!ccFHid?ccFSum:0)+(!ccTHid?ccTSum:0);
+
+  const fixedDayGroups=[25,10,...([...new Set(fixedCosts.map(f=>f.day))].filter(d=>d!==25&&d!==10).sort((a,b)=>a===null?1:b===null?-1:a-b))];
+
+  const pBtn={background:"linear-gradient(135deg,#3d2d8e,#5d3d9e)",border:"1px solid #6d4dae",color:"#e0d4ff",borderRadius:"10px",padding:"10px 18px",cursor:"pointer",fontSize:"14px",display:"flex",alignItems:"center",gap:"4px",fontWeight:500,WebkitAppearance:"none"};
+  const sBtn=(bc,c)=>({background:"none",border:`1px solid ${bc}`,color:c,borderRadius:"6px",padding:"5px 9px",cursor:"pointer",fontSize:"12px",WebkitAppearance:"none"});
+  const navB={background:"rgba(255,255,255,0.05)",border:"1px solid #2d2d4e",color:"#a0a0d0",borderRadius:"10px",padding:"8px 16px",cursor:"pointer",fontSize:"20px",lineHeight:1};
+  const inSt={background:"#0d0d1a",border:"1px solid rgba(26,188,156,0.3)",borderRadius:"6px",padding:"9px 10px",color:"#e0e0ff",fontSize:"14px",outline:"none"};
+
+  return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0a0a1a,#0d0d2b,#0a0a1a)",color:"#e0e0ff",paddingBottom:"env(safe-area-inset-bottom)"}}>
+
+      {/* HEADER */}
+      <div style={{background:"rgba(13,13,42,0.95)",backdropFilter:"blur(12px)",borderBottom:"1px solid #2d2d4e",padding:"14px 16px",position:"sticky",top:0,zIndex:100,paddingTop:"calc(14px + env(safe-area-inset-top))"}}>
+        <div style={{maxWidth:"600px",margin:"0 auto"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div>
+              <h1 style={{margin:0,fontSize:"20px",fontWeight:700,color:"#c0b4ff"}}>💴 家計簿</h1>
+              <div style={{fontSize:"11px",color:"#6060a0",marginTop:"1px"}}>25日起算サイクル管理</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
+              <button onClick={prevCycle} style={navB}>‹</button>
+              <div style={{fontSize:"13px",color:"#a0a0d0",minWidth:"110px",textAlign:"center"}}>{cy}年{cm+1}月〜</div>
+              <button onClick={nextCycle} style={navB}>›</button>
+            </div>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginTop:"12px"}}>
+            {[["サイクル支出",cycleTotal,"#e74c3c"],["予算合計",cycleBudget,"#3498db"],["固定費合計",fixedTotal,"#9b59b6"]].map(([l,v,c])=>(
+              <div key={l} style={{background:"rgba(255,255,255,0.04)",borderRadius:"10px",padding:"10px 10px",border:"1px solid #2d2d4e"}}>
+                <div style={{fontSize:"10px",color:"#6060a0",marginBottom:"3px"}}>{l}</div>
+                <div style={{fontSize:"15px",fontFamily:"'Space Mono',monospace",color:c,fontWeight:700}}>¥{v.toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{maxWidth:"600px",margin:"0 auto",padding:"0 14px"}}>
+        {/* TABS */}
+        <div style={{display:"flex",gap:"4px",padding:"12px 0",borderBottom:"1px solid #1a1a3a"}}>
+          {[["weekly","📊 週次"],["fixed","📌 固定費"],["memo","📝 メモ"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setActiveTab(k)} style={{background:activeTab===k?"#2d2d5e":"transparent",border:activeTab===k?"1px solid #4d4d9e":"1px solid transparent",borderRadius:"8px",padding:"9px 14px",color:activeTab===k?"#c0b4ff":"#606080",cursor:"pointer",fontSize:"13px",flex:1,WebkitAppearance:"none"}}>{l}</button>
+          ))}
+        </div>
+
+        {/* ===== WEEKLY ===== */}
+        {activeTab==="weekly" && (
+          <div style={{padding:"14px 0"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"14px"}}>
+              <h2 style={{margin:0,fontSize:"13px",color:"#a0a0d0"}}>{getCycleLabel(cy,cm)}</h2>
+              <button onClick={()=>setModalAddExp(true)} style={pBtn}>＋ 支出追加</button>
+            </div>
+            {cycleBudget>0&&(
+              <div style={{marginBottom:"14px"}}>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:"12px",color:"#8080a0",marginBottom:"4px"}}>
+                  <span>サイクル予算消化率</span><span>{Math.round(cycleTotal/cycleBudget*100)}%</span>
+                </div>
+                <div style={{background:"#1a1a3a",borderRadius:"4px",height:"6px",overflow:"hidden"}}>
+                  <div style={{height:"100%",borderRadius:"4px",width:`${Math.min(100,cycleTotal/cycleBudget*100)}%`,background:cycleTotal>cycleBudget?"#e74c3c":"linear-gradient(90deg,#3498db,#9b59b6)",transition:"width .5s"}}/>
+                </div>
+              </div>
+            )}
+            {periods.map((period,idx)=>{
+              const pDates=getDatesInRange(period.start,period.end);
+              const pActual=pDates.reduce((s,d)=>s+getActual(dateKey(d)),0);
+              const pBudget=pDates.reduce((s,d)=>s+getBudget(dateKey(d)),0);
+              const cumul=periods.slice(0,idx+1).flatMap(p=>getDatesInRange(p.start,p.end)).reduce((s,d)=>s+getActual(dateKey(d)),0);
+              const isOver=pBudget>0&&pActual>pBudget;
+              return (
+                <div key={idx} style={{background:"rgba(255,255,255,0.03)",border:`1px solid ${isOver?"#e74c3c40":"#2d2d4e"}`,borderRadius:"12px",marginBottom:"10px",overflow:"hidden"}}>
+                  <div style={{background:isOver?"rgba(231,76,60,0.1)":"rgba(255,255,255,0.03)",padding:"11px 14px",display:"flex",justifyContent:"space-between",alignItems:"center",borderBottom:"1px solid #1a1a3a"}}>
+                    <span style={{fontSize:"13px",fontWeight:600,color:"#c0b4ff"}}>
+                      第{idx+1}週　{formatDate(period.start)}〜{formatDate(period.end)}
+                      {isOver&&<span style={{marginLeft:"6px",fontSize:"10px",color:"#e74c3c"}}>⚠超過</span>}
+                    </span>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:"15px",fontFamily:"'Space Mono',monospace",color:isOver?"#e74c3c":"#e0e0ff",fontWeight:700}}>¥{pActual.toLocaleString()}</div>
+                      {pBudget>0&&<div style={{fontSize:"10px",color:"#6060a0"}}>予算¥{pBudget.toLocaleString()}</div>}
+                    </div>
+                  </div>
+                  {pBudget>0&&<div style={{padding:"5px 14px 0",background:"rgba(0,0,0,0.2)"}}><div style={{background:"#1a1a3a",borderRadius:"3px",height:"3px",overflow:"hidden"}}><div style={{height:"100%",width:`${Math.min(100,pActual/pBudget*100)}%`,background:isOver?"#e74c3c":"linear-gradient(90deg,#27ae60,#3498db)"}}/></div></div>}
+                  <div style={{padding:"4px 6px 6px"}}>
+                    {pDates.map(d=>{
+                      const dk=dateKey(d);const actual=getActual(dk);const budget=getBudget(dk);
+                      const dd=dailyData[dk]||{};const isToday=dk===todayKey;const isFuture=d>today;
+                      return (
+                        <div key={dk} onClick={()=>setSelectedDate(dk)} style={{padding:"7px 8px",borderRadius:"8px",marginBottom:"2px",background:isToday?"rgba(192,180,255,0.08)":"transparent",border:isToday?"1px solid rgba(192,180,255,0.2)":"1px solid transparent",cursor:"pointer",opacity:isFuture?0.5:1}}>
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:"7px"}}>
+                              <span style={{fontSize:"12px",fontFamily:"'Space Mono',monospace",color:isToday?"#c0b4ff":"#8080a0",minWidth:"30px"}}>{d.getMonth()+1}/{d.getDate()}</span>
+                              <span style={{fontSize:"11px",color:"#505070"}}>{["日","月","火","水","木","金","土"][d.getDay()]}</span>
+                              <div style={{display:"flex",gap:"3px",flexWrap:"wrap"}}>
+                                {(dd.expenses||[]).slice(0,2).map(e=>(
+                                  <span key={e.id} style={{background:(CAT_COLORS[e.category]||"#95a5a6")+"30",color:CAT_COLORS[e.category]||"#95a5a6",fontSize:"10px",padding:"1px 4px",borderRadius:"3px"}}>{e.note||e.category}</span>
+                                ))}
+                                {(dd.expenses||[]).length>2&&<span style={{fontSize:"10px",color:"#606080"}}>+{(dd.expenses||[]).length-2}</span>}
+                              </div>
+                            </div>
+                            <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                              {budget>0&&<span style={{fontSize:"10px",color:"#6060a0"}}>予¥{budget.toLocaleString()}</span>}
+                              {actual>0?<span style={{fontSize:"13px",fontFamily:"'Space Mono',monospace",color:(budget>0&&actual>budget)?"#e74c3c":"#e0e0ff",fontWeight:600}}>¥{actual.toLocaleString()}</span>:<span style={{fontSize:"12px",color:"#303050"}}>—</span>}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{padding:"7px 14px",borderTop:"1px solid #1a1a3a",background:"rgba(0,0,0,0.2)",display:"flex",justifyContent:"space-between"}}>
+                    <span style={{fontSize:"11px",color:"#6060a0"}}>第{idx+1}週末累計</span>
+                    <span style={{fontSize:"14px",fontFamily:"'Space Mono',monospace",color:"#a0c4ff",fontWeight:700}}>¥{cumul.toLocaleString()}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* ===== FIXED ===== */}
+        {activeTab==="fixed" && (
+          <div style={{padding:"14px 0"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"4px"}}>
+              <h2 style={{margin:0,fontSize:"15px",color:"#a0a0d0"}}>固定費管理</h2>
+              <div style={{display:"flex",gap:"6px"}}>
+                <button onClick={()=>setModalAddTemp(true)} style={{background:"rgba(243,156,18,0.15)",border:"1px solid rgba(243,156,18,0.4)",color:"#f39c12",borderRadius:"8px",padding:"8px 12px",cursor:"pointer",fontSize:"12px",WebkitAppearance:"none"}}>＋ 臨時</button>
+                <button onClick={()=>setModalAddFixed(true)} style={pBtn}>＋ 固定費</button>
+              </div>
+            </div>
+            <div style={{fontSize:"11px",color:"#505070",marginBottom:"14px"}}>{cy}年{cm+1}月サイクル ／ 変更・除外はこのサイクルのみ反映</div>
+
+            {fixedDayGroups.map(day=>{
+              const items=fixedCosts.filter(f=>f.day===day);
+              if(!items.length) return null;
+              return (
+                <div key={String(day)} style={{marginBottom:"18px"}}>
+                  <div style={{fontSize:"12px",color:"#8080a0",marginBottom:"7px",padding:"3px 8px",background:"rgba(255,255,255,0.03)",borderRadius:"6px",display:"inline-block"}}>
+                    {day?`📅 毎月${day}日`:"📋 その他"}
+                  </div>
+                  {items.map(f=>{
+                    const ov=thisCycle.overrides[f.id]||{};
+                    const isHid=!!ov.hidden;
+                    const bdItems=f.hasBreakdown?getBDItems(f.id):[];
+                    const bdTot=bdItems.length?bdItems.reduce((s,b)=>s+Number(b.amount),0):null;
+                    const effAmt=f.hasBreakdown?(bdTot!==null?bdTot:(ov.amount??f.amount)):(ov.amount??f.amount);
+                    const isOvr=!f.hasBreakdown&&ov.amount!==undefined;
+                    const isExp=!!expandedBD[f.id];
+                    const isTeal=!!f.hasBreakdown;
+                    return (
+                      <div key={f.id} style={{background:isHid?"rgba(255,255,255,0.01)":isTeal?"rgba(26,188,156,0.05)":"rgba(255,255,255,0.04)",border:`1px solid ${isHid?"#1d1d3a":isTeal?"rgba(26,188,156,0.25)":isOvr?"rgba(243,156,18,0.35)":"#2d2d4e"}`,borderRadius:"10px",marginBottom:"6px",overflow:"hidden",opacity:isHid?0.45:1}}>
+                        <div style={{padding:"10px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",gap:"4px"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:"8px",flex:1,minWidth:0}}>
+                            <div style={{width:"7px",height:"7px",borderRadius:"50%",flexShrink:0,background:isHid?"#404060":isTeal?"#1abc9c":(CAT_COLORS[f.category]||"#95a5a6")}}/>
+                            <div style={{minWidth:0}}>
+                              <div style={{fontSize:"13px",color:isHid?"#505070":"#e0e0ff",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.name}</div>
+                              <div style={{fontSize:"10px",color:"#505070"}}>{f.category}</div>
+                            </div>
+                            {isOvr&&<span style={{fontSize:"10px",background:"rgba(243,156,18,0.15)",color:"#f39c12",borderRadius:"4px",padding:"1px 5px",flexShrink:0}}>今月変更</span>}
+                            {isHid&&<span style={{fontSize:"10px",background:"rgba(100,100,100,0.2)",color:"#606080",borderRadius:"4px",padding:"1px 5px",flexShrink:0}}>除外</span>}
+                          </div>
+                          <div style={{display:"flex",alignItems:"center",gap:"3px",flexShrink:0}}>
+                            <span style={{fontSize:"13px",fontFamily:"'Space Mono',monospace",fontWeight:700,color:isHid?"#404060":isTeal?"#1abc9c":isOvr?"#f39c12":"#c0b4ff",marginRight:"4px"}}>¥{Number(effAmt).toLocaleString()}</span>
+                            {isTeal?(
+                              <button onClick={()=>setExpandedBD(p=>({...p,[f.id]:!p[f.id]}))} style={{background:isExp?"rgba(26,188,156,0.2)":"rgba(26,188,156,0.08)",border:"1px solid rgba(26,188,156,0.35)",color:"#1abc9c",borderRadius:"5px",padding:"4px 7px",cursor:"pointer",fontSize:"11px",WebkitAppearance:"none"}}>
+                                {isExp?"▲":"▼"} 内訳{bdItems.length>0?`(${bdItems.length})`:""}
+                              </button>
+                            ):(
+                              <button onClick={()=>{setModalOverride(f);setFOver(isOvr?String(ov.amount):"");}} style={sBtn("#3d3d6e","#a0a0d0")}>変更</button>
+                            )}
+                            <button onClick={()=>toggleHidden(f.id,isHid)} style={sBtn(isHid?"#3d6e3d":"#5e3d3d",isHid?"#60a060":"#a06060")}>{isHid?"復活":"除外"}</button>
+                            <button onClick={()=>handleOpenEdit(f)} style={sBtn("#2d2d4e","#606080")}>編集</button>
+                            <button onClick={()=>handleDelFixed(f.id)} style={sBtn("#2d2d3e","#504050")}>✕</button>
+                          </div>
+                        </div>
+                        {isTeal&&isExp&&(
+                          <div style={{borderTop:"1px solid rgba(26,188,156,0.15)",background:"rgba(26,188,156,0.04)",padding:"12px"}}>
+                            {bdItems.length>0&&(
+                              <div style={{marginBottom:"10px"}}>
+                                {bdItems.map(b=>(
+                                  <div key={b.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 4px",borderBottom:"1px solid rgba(26,188,156,0.08)"}}>
+                                    <span style={{fontSize:"13px",color:"#b0d8d0"}}>{b.name}</span>
+                                    <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                                      <span style={{fontSize:"13px",fontFamily:"'Space Mono',monospace",color:"#1abc9c"}}>¥{Number(b.amount).toLocaleString()}</span>
+                                      <button onClick={()=>delBDItem(f.id,b.id)} style={{background:"none",border:"none",color:"#406050",cursor:"pointer",fontSize:"16px",padding:"0 4px",lineHeight:1}}>✕</button>
+                                    </div>
+                                  </div>
+                                ))}
+                                <div style={{display:"flex",justifyContent:"flex-end",paddingTop:"6px",borderTop:"1px solid rgba(26,188,156,0.15)",marginTop:"4px"}}>
+                                  <span style={{fontSize:"13px",color:"#608070"}}>合計 <span style={{fontFamily:"'Space Mono',monospace",color:"#1abc9c",fontWeight:700}}>¥{(bdTot||0).toLocaleString()}</span></span>
+                                </div>
+                              </div>
+                            )}
+                            <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+                              <input placeholder="項目名" value={fBD.fcId===f.id?fBD.name:""} onFocus={()=>setFBD(p=>({...p,fcId:f.id}))} onChange={e=>setFBD(p=>({...p,fcId:f.id,name:e.target.value}))} style={{...inSt,flex:2,fontSize:"16px"}}/>
+                              <input placeholder="金額" type="number" value={fBD.fcId===f.id?fBD.amount:""} onFocus={()=>setFBD(p=>({...p,fcId:f.id}))} onChange={e=>setFBD(p=>({...p,fcId:f.id,amount:e.target.value}))} style={{...inSt,flex:1,fontFamily:"'Space Mono',monospace",fontSize:"16px"}}/>
+                              <button onClick={()=>handleAddBD(f.id)} style={{background:"rgba(26,188,156,0.2)",border:"1px solid rgba(26,188,156,0.4)",color:"#1abc9c",borderRadius:"6px",padding:"9px 12px",cursor:"pointer",fontSize:"18px",fontWeight:700,WebkitAppearance:"none"}}>＋</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })}
+
+            {(thisCycle.tempItems||[]).length>0&&(
+              <div style={{marginBottom:"18px"}}>
+                <div style={{fontSize:"12px",color:"#f39c12",marginBottom:"7px",padding:"3px 8px",background:"rgba(243,156,18,0.08)",borderRadius:"6px",display:"inline-block",border:"1px solid rgba(243,156,18,0.2)"}}>⚡ 今月の臨時支出</div>
+                {(thisCycle.tempItems||[]).map(t=>(
+                  <div key={t.id} style={{background:"rgba(243,156,18,0.06)",border:"1px solid rgba(243,156,18,0.25)",borderRadius:"10px",padding:"10px 12px",marginBottom:"6px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+                      <div style={{width:"7px",height:"7px",borderRadius:"50%",background:"#f39c12"}}/>
+                      <div>
+                        <div style={{fontSize:"13px",color:"#f0d080"}}>{t.name}</div>
+                        <div style={{fontSize:"10px",color:"#806040"}}>{t.category}{t.day?` ／ ${t.day}日`:""}</div>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",alignItems:"center",gap:"8px"}}>
+                      <span style={{fontSize:"13px",fontFamily:"'Space Mono',monospace",color:"#f39c12",fontWeight:700}}>¥{Number(t.amount).toLocaleString()}</span>
+                      <button onClick={()=>handleDelTemp(t.id)} style={sBtn("#5e3d1e","#805030")}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{background:"rgba(26,188,156,0.08)",border:"1px solid rgba(26,188,156,0.25)",borderRadius:"10px",padding:"12px 14px",marginBottom:"10px"}}>
+              <div style={{fontSize:"12px",color:"#1abc9c",marginBottom:"8px",fontWeight:600}}>💳 クレカ決済 小計</div>
+              <div style={{display:"flex",flexDirection:"column",gap:"5px",marginBottom:"8px"}}>
+                <div style={{display:"flex",justifyContent:"space-between"}}>
+                  <span style={{fontSize:"12px",color:ccFHid?"#404060":"#8080a0"}}>固定 ({ccFBD.length}件){ccFHid?" ／除外中":""}</span>
+                  <span style={{fontSize:"12px",fontFamily:"'Space Mono',monospace",color:ccFHid?"#404060":"#a0d0c8"}}>¥{ccFSum.toLocaleString()}</span>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between"}}>
+                  <span style={{fontSize:"12px",color:ccTHid?"#404060":"#8080a0"}}>臨時 ({ccTBD.length}件){ccTHid?" ／除外中":""}</span>
+                  <span style={{fontSize:"12px",fontFamily:"'Space Mono',monospace",color:ccTHid?"#404060":"#a0d0c8"}}>¥{ccTSum.toLocaleString()}</span>
+                </div>
+              </div>
+              <div style={{borderTop:"1px solid rgba(26,188,156,0.2)",paddingTop:"8px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:"13px",color:"#1abc9c",fontWeight:600}}>合計</span>
+                <span style={{fontSize:"18px",fontFamily:"'Space Mono',monospace",color:"#1abc9c",fontWeight:700}}>¥{ccTot.toLocaleString()}</span>
+              </div>
+            </div>
+
+            <div style={{background:"rgba(155,89,182,0.1)",border:"1px solid rgba(155,89,182,0.3)",borderRadius:"10px",padding:"14px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <span style={{fontSize:"14px",color:"#c0a0ff"}}>今月固定費合計</span>
+                {Object.values(thisCycle.overrides||{}).some(o=>o.hidden)&&<div style={{fontSize:"10px",color:"#606080"}}>除外済みを含まない</div>}
+              </div>
+              <span style={{fontSize:"20px",fontFamily:"'Space Mono',monospace",color:"#c0a0ff",fontWeight:700}}>¥{fixedTotal.toLocaleString()}</span>
+            </div>
+          </div>
+        )}
+
+        {/* ===== MEMO ===== */}
+        {activeTab==="memo" && (
+          <div style={{padding:"14px 0"}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"14px"}}>
+              <h2 style={{margin:0,fontSize:"15px",color:"#a0a0d0"}}>支払予定メモ</h2>
+              <button onClick={()=>setModalAddMemo(true)} style={pBtn}>＋ 追加</button>
+            </div>
+            {futureMemos.length>0&&<><div style={{fontSize:"12px",color:"#8080a0",marginBottom:"8px"}}>📅 今後の予定</div>{futureMemos.map(m=><MemoCard key={m.id} memo={m} onDelete={handleDelMemo}/>)}</>}
+            {pastMemos.length>0&&<><div style={{fontSize:"12px",color:"#8080a0",margin:"14px 0 8px"}}>✅ 過去の記録</div>{pastMemos.map(m=><MemoCard key={m.id} memo={m} onDelete={handleDelMemo} past/>)}</>}
+            {memos.length===0&&<div style={{textAlign:"center",color:"#404060",padding:"40px",fontSize:"14px"}}>支払予定メモはまだありません</div>}
+          </div>
+        )}
+      </div>
+
+      {/* ===== MODALS ===== */}
+      <Modal open={!!selectedDate} onClose={()=>setSelectedDate(null)} title={selectedDate?selectedDate.replace(/-/g,"/")+" の明細":""}>
+        {selectedDate&&(()=>{
+          const exps=dailyData[selectedDate]?.expenses||[];
+          return (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",background:"rgba(255,255,255,0.04)",borderRadius:"8px",padding:"12px",marginBottom:"14px"}}>
+                <div><div style={{fontSize:"11px",color:"#6060a0"}}>支出合計</div><div style={{fontSize:"20px",fontFamily:"'Space Mono',monospace",color:"#e74c3c",fontWeight:700}}>¥{getActual(selectedDate).toLocaleString()}</div></div>
+                <div style={{textAlign:"right"}}><div style={{fontSize:"11px",color:"#6060a0"}}>予算</div><div style={{fontSize:"20px",fontFamily:"'Space Mono',monospace",color:"#3498db",fontWeight:700}}>¥{getBudget(selectedDate).toLocaleString()}</div></div>
+              </div>
+              {exps.length===0?<div style={{color:"#404060",textAlign:"center",padding:"20px"}}>支出なし</div>
+                :exps.map(e=>(
+                  <div key={e.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 12px",borderRadius:"8px",background:"rgba(255,255,255,0.03)",marginBottom:"6px",border:"1px solid #2d2d4e"}}>
+                    <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+                      <span style={{background:(CAT_COLORS[e.category]||"#95a5a6")+"30",color:CAT_COLORS[e.category]||"#95a5a6",fontSize:"11px",padding:"2px 6px",borderRadius:"4px"}}>{e.category}</span>
+                      {e.note&&<span style={{fontSize:"13px",color:"#c0c0e0"}}>{e.note}</span>}
+                    </div>
+                    <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+                      <span style={{fontFamily:"'Space Mono',monospace",fontSize:"14px"}}>¥{Number(e.amount).toLocaleString()}</span>
+                      <button onClick={()=>handleDelExp(selectedDate,e.id)} style={{background:"none",border:"1px solid #3d3d5e",color:"#e74c3c",borderRadius:"4px",padding:"4px 8px",cursor:"pointer",fontSize:"13px",WebkitAppearance:"none"}}>✕</button>
+                    </div>
+                  </div>
+                ))
+              }
+              <button onClick={()=>{setFExp(f=>({...f,date:selectedDate}));setSelectedDate(null);setModalAddExp(true);}} style={{...pBtn,width:"100%",marginTop:"12px",justifyContent:"center"}}>＋ この日に支出追加</button>
+            </div>
+          );
+        })()}
+      </Modal>
+
+      <Modal open={modalAddExp} onClose={()=>setModalAddExp(false)} title="支出・予算を追加">
+        <div style={{display:"flex",gap:"8px",marginBottom:"16px"}}>
+          {[false,true].map(ib=>(
+            <button key={String(ib)} onClick={()=>setFExp(f=>({...f,isBudget:ib}))} style={{flex:1,padding:"10px",background:fExp.isBudget===ib?"#2d2d5e":"transparent",border:`1px solid ${fExp.isBudget===ib?"#4d4d9e":"#2d2d4e"}`,borderRadius:"8px",color:fExp.isBudget===ib?"#c0b4ff":"#606080",cursor:"pointer",fontSize:"14px",WebkitAppearance:"none"}}>
+              {ib?"📊 予算設定":"💸 支出記録"}
+            </button>
+          ))}
+        </div>
+        <Field label="日付" value={fExp.date} onChange={v=>setFExp(f=>({...f,date:v}))} type="date"/>
+        <Field label="金額" value={fExp.amount} onChange={v=>setFExp(f=>({...f,amount:v}))} type="number" placeholder="0"/>
+        {!fExp.isBudget&&<><SelField label="カテゴリ" value={fExp.category} onChange={v=>setFExp(f=>({...f,category:v}))} options={EXPENSE_CATS}/><Field label="メモ（任意）" value={fExp.note} onChange={v=>setFExp(f=>({...f,note:v}))} placeholder="内容を入力"/></>}
+        <button onClick={handleAddExp} style={{...pBtn,width:"100%",justifyContent:"center"}}>保存</button>
+      </Modal>
+
+      <Modal open={modalAddFixed} onClose={()=>setModalAddFixed(false)} title="固定費を追加">
+        <Field label="項目名" value={fFixed.name} onChange={v=>setFFixed(f=>({...f,name:v}))} placeholder="例: Netflix"/>
+        <SelField label="カテゴリ" value={fFixed.category} onChange={v=>setFFixed(f=>({...f,category:v}))} options={ALL_CATS}/>
+        <Field label="引落日（任意）" value={fFixed.day} onChange={v=>setFFixed(f=>({...f,day:v}))} type="number" placeholder="例: 25"/>
+        <Field label="金額" value={fFixed.amount} onChange={v=>setFFixed(f=>({...f,amount:v}))} type="number" placeholder="0"/>
+        <label style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px",cursor:"pointer",fontSize:"14px",color:"#a0a0c0"}}>
+          <input type="checkbox" checked={fFixed.hasBreakdown} onChange={e=>setFFixed(f=>({...f,hasBreakdown:e.target.checked}))} style={{width:"18px",height:"18px"}}/>内訳入力を有効にする
+        </label>
+        <button onClick={handleAddFixed} style={{...pBtn,width:"100%",justifyContent:"center"}}>追加</button>
+      </Modal>
+
+      <Modal open={!!modalEditFixed} onClose={()=>setModalEditFixed(null)} title="固定費を編集">
+        <Field label="項目名" value={fEdit.name} onChange={v=>setFEdit(f=>({...f,name:v}))}/>
+        <SelField label="カテゴリ" value={fEdit.category} onChange={v=>setFEdit(f=>({...f,category:v}))} options={ALL_CATS}/>
+        <Field label="引落日（任意）" value={fEdit.day} onChange={v=>setFEdit(f=>({...f,day:v}))} type="number" placeholder="例: 25"/>
+        <Field label="金額" value={fEdit.amount} onChange={v=>setFEdit(f=>({...f,amount:v}))} type="number" placeholder="0"/>
+        <label style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"16px",cursor:"pointer",fontSize:"14px",color:"#a0a0c0"}}>
+          <input type="checkbox" checked={fEdit.hasBreakdown} onChange={e=>setFEdit(f=>({...f,hasBreakdown:e.target.checked}))} style={{width:"18px",height:"18px"}}/>内訳入力を有効にする
+        </label>
+        <div style={{display:"flex",gap:"8px"}}>
+          <button onClick={()=>setModalEditFixed(null)} style={{flex:1,background:"transparent",border:"1px solid #3d3d5e",color:"#808090",borderRadius:"8px",padding:"12px",cursor:"pointer",fontSize:"14px",WebkitAppearance:"none"}}>キャンセル</button>
+          <button onClick={handleUpdateFixed} style={{...pBtn,flex:2,justifyContent:"center"}}>保存する</button>
+        </div>
+      </Modal>
+
+      <Modal open={modalAddTemp} onClose={()=>setModalAddTemp(false)} title="今月の臨時支出を追加">
+        <div style={{background:"rgba(243,156,18,0.08)",border:"1px solid rgba(243,156,18,0.2)",borderRadius:"8px",padding:"10px 12px",marginBottom:"14px",fontSize:"13px",color:"#c09040"}}>このサイクルのみ表示されます</div>
+        <Field label="項目名" value={fTemp.name} onChange={v=>setFTemp(f=>({...f,name:v}))} placeholder="例: 旅行積立"/>
+        <SelField label="カテゴリ" value={fTemp.category} onChange={v=>setFTemp(f=>({...f,category:v}))} options={ALL_CATS}/>
+        <Field label="引落日（任意）" value={fTemp.day} onChange={v=>setFTemp(f=>({...f,day:v}))} type="number" placeholder="例: 15"/>
+        <Field label="金額" value={fTemp.amount} onChange={v=>setFTemp(f=>({...f,amount:v}))} type="number" placeholder="0"/>
+        <button onClick={handleAddTemp} style={{...pBtn,width:"100%",justifyContent:"center",background:"linear-gradient(135deg,#8e5d00,#b07a10)",border:"1px solid #c09020"}}>追加</button>
+      </Modal>
+
+      <Modal open={!!modalOverride} onClose={()=>{setModalOverride(null);setFOver("");}} title={`今月の金額を変更：${modalOverride?.name||""}`}>
+        <div style={{background:"rgba(243,156,18,0.06)",border:"1px solid rgba(243,156,18,0.15)",borderRadius:"8px",padding:"10px 12px",marginBottom:"14px",fontSize:"13px",color:"#c09040"}}>このサイクルのみ反映。元の金額 ¥{Number(modalOverride?.amount||0).toLocaleString()}</div>
+        <Field label="今月の金額（空欄でリセット）" value={fOver} onChange={setFOver} type="number" placeholder={String(modalOverride?.amount||"")}/>
+        <div style={{display:"flex",gap:"8px"}}>
+          <button onClick={()=>{setModalOverride(null);setFOver("");}} style={{flex:1,background:"transparent",border:"1px solid #3d3d5e",color:"#808090",borderRadius:"8px",padding:"12px",cursor:"pointer",fontSize:"14px",WebkitAppearance:"none"}}>キャンセル</button>
+          <button onClick={handleSaveOverride} style={{...pBtn,flex:2,justifyContent:"center",background:"linear-gradient(135deg,#7a5a00,#a07010)",border:"1px solid #b08020"}}>今月だけ変更</button>
+        </div>
+      </Modal>
+
+      <Modal open={modalAddMemo} onClose={()=>setModalAddMemo(false)} title="支払予定メモを追加">
+        <Field label="予定日" value={fMemo.date} onChange={v=>setFMemo(f=>({...f,date:v}))} type="date"/>
+        <Field label="タイトル" value={fMemo.title} onChange={v=>setFMemo(f=>({...f,title:v}))} placeholder="例: 年払い保険"/>
+        <Field label="金額（任意）" value={fMemo.amount} onChange={v=>setFMemo(f=>({...f,amount:v}))} type="number" placeholder="0"/>
+        <Field label="メモ（任意）" value={fMemo.note} onChange={v=>setFMemo(f=>({...f,note:v}))} placeholder="詳細を入力"/>
+        <button onClick={handleAddMemo} style={{...pBtn,width:"100%",justifyContent:"center"}}>追加</button>
+      </Modal>
+    </div>
+  );
+}
+
+function MemoCard({memo, onDelete, past}) {
+  return (
+    <div style={{background:past?"rgba(255,255,255,0.02)":"rgba(192,180,255,0.05)",border:`1px solid ${past?"#1d1d3a":"#3d3d6e"}`,borderRadius:"10px",padding:"12px 14px",marginBottom:"8px",opacity:past?0.6:1}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+        <div>
+          <div style={{display:"flex",gap:"8px",alignItems:"center",marginBottom:"4px"}}>
+            <span style={{fontSize:"12px",fontFamily:"'Space Mono',monospace",color:"#8080c0"}}>{memo.date.replace(/-/g,"/")}</span>
+            <span style={{fontSize:"14px",color:"#e0e0ff"}}>{memo.title}</span>
+          </div>
+          {memo.amount&&<div style={{fontSize:"14px",fontFamily:"'Space Mono',monospace",color:"#c0b4ff"}}>¥{Number(memo.amount).toLocaleString()}</div>}
+          {memo.note&&<div style={{fontSize:"12px",color:"#6060a0",marginTop:"4px"}}>{memo.note}</div>}
+        </div>
+        <button onClick={()=>onDelete(memo.id)} style={{background:"none",border:"1px solid #3d3d5e",color:"#606080",borderRadius:"6px",padding:"6px 10px",cursor:"pointer",fontSize:"13px",flexShrink:0,WebkitAppearance:"none"}}>削除</button>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('app'));
+root.render(<KakeiboApp/>);
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js').then(r => {
+      console.log('SW registered');
+    }).catch(e => console.log('SW failed:', e));
+  });
+}
+</script>
+</body>
+</html>
