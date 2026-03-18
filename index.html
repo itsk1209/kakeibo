@@ -239,10 +239,22 @@ function KakeiboApp() {
   const futureMemos = memos.filter(m=>m.date>=todayKey).sort((a,b)=>a.date.localeCompare(b.date));
   const pastMemos   = memos.filter(m=>m.date< todayKey).sort((a,b)=>b.date.localeCompare(a.date));
 
-  const ccFBD=getBDItems("fc5"); const ccTBD=getBDItems("fc5b");
-  const ccFHid=thisCycle.overrides["fc5"]?.hidden; const ccTHid=thisCycle.overrides["fc5b"]?.hidden;
-  const ccFSum=ccFBD.reduce((s,b)=>s+Number(b.amount),0); const ccTSum=ccTBD.reduce((s,b)=>s+Number(b.amount),0);
-  const ccTot=(!ccFHid?ccFSum:0)+(!ccTHid?ccTSum:0);
+  // クレカ集計：名前に「クレカ」を含む内訳あり項目をすべて対象にする
+  const ccFixedItems = fixedCosts.filter(f => f.hasBreakdown && f.name.includes("クレカ") && f.name.includes("固定"));
+  const ccTempItems  = fixedCosts.filter(f => f.hasBreakdown && f.name.includes("クレカ") && (f.name.includes("臨時") || !f.name.includes("固定")));
+  // どちらにも分類されない場合は全クレカ項目をまとめて扱う
+  const ccAllItems   = fixedCosts.filter(f => f.hasBreakdown && f.name.includes("クレカ"));
+  const useGrouped   = ccFixedItems.length > 0 || ccTempItems.length > 0;
+
+  const ccFBD  = useGrouped ? ccFixedItems.flatMap(f => getBDItems(f.id)) : [];
+  const ccTBD  = useGrouped ? ccTempItems.flatMap(f => getBDItems(f.id))  : ccAllItems.flatMap(f => getBDItems(f.id));
+  const ccFHid = useGrouped ? ccFixedItems.every(f => thisCycle.overrides[f.id]?.hidden) && ccFixedItems.length > 0 : false;
+  const ccTHid = useGrouped
+    ? (ccTempItems.length > 0 && ccTempItems.every(f => thisCycle.overrides[f.id]?.hidden))
+    : ccAllItems.every(f => thisCycle.overrides[f.id]?.hidden) && ccAllItems.length > 0;
+  const ccFSum = ccFBD.reduce((s,b)=>s+Number(b.amount),0);
+  const ccTSum = ccTBD.reduce((s,b)=>s+Number(b.amount),0);
+  const ccTot  = (!ccFHid ? ccFSum : 0) + (!ccTHid ? ccTSum : 0);
 
   const fixedDayGroups=[25,10,...([...new Set(fixedCosts.map(f=>f.day))].filter(d=>d!==25&&d!==10).sort((a,b)=>a===null?1:b===null?-1:a-b))];
 
@@ -472,18 +484,23 @@ function KakeiboApp() {
             <div style={{background:"rgba(26,188,156,0.08)",border:"1px solid rgba(26,188,156,0.25)",borderRadius:"10px",padding:"12px 14px",marginBottom:"10px"}}>
               <div style={{fontSize:"12px",color:"#1abc9c",marginBottom:"8px",fontWeight:600}}>💳 クレカ決済 小計</div>
               <div style={{display:"flex",flexDirection:"column",gap:"5px",marginBottom:"8px"}}>
-                <div style={{display:"flex",justifyContent:"space-between"}}>
-                  <span style={{fontSize:"12px",color:ccFHid?"#404060":"#8080a0"}}>固定 ({ccFBD.length}件){ccFHid?" ／除外中":""}</span>
-                  <span style={{fontSize:"12px",fontFamily:"'Space Mono',monospace",color:ccFHid?"#404060":"#a0d0c8"}}>¥{ccFSum.toLocaleString()}</span>
-                </div>
-                <div style={{display:"flex",justifyContent:"space-between"}}>
-                  <span style={{fontSize:"12px",color:ccTHid?"#404060":"#8080a0"}}>臨時 ({ccTBD.length}件){ccTHid?" ／除外中":""}</span>
-                  <span style={{fontSize:"12px",fontFamily:"'Space Mono',monospace",color:ccTHid?"#404060":"#a0d0c8"}}>¥{ccTSum.toLocaleString()}</span>
-                </div>
+                {ccAllItems.length === 0 ? (
+                  <div style={{fontSize:"12px",color:"#505070"}}>クレカ決済項目がありません</div>
+                ) : ccAllItems.map(f => {
+                  const isHid = thisCycle.overrides[f.id]?.hidden;
+                  const bdItems = getBDItems(f.id);
+                  const sum = bdItems.reduce((s,b)=>s+Number(b.amount),0);
+                  return (
+                    <div key={f.id} style={{display:"flex",justifyContent:"space-between"}}>
+                      <span style={{fontSize:"12px",color:isHid?"#404060":"#8080a0"}}>{f.name} ({bdItems.length}件){isHid?" ／除外中":""}</span>
+                      <span style={{fontSize:"12px",fontFamily:"'Space Mono',monospace",color:isHid?"#404060":"#a0d0c8"}}>¥{sum.toLocaleString()}</span>
+                    </div>
+                  );
+                })}
               </div>
               <div style={{borderTop:"1px solid rgba(26,188,156,0.2)",paddingTop:"8px",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{fontSize:"13px",color:"#1abc9c",fontWeight:600}}>合計</span>
-                <span style={{fontSize:"18px",fontFamily:"'Space Mono',monospace",color:"#1abc9c",fontWeight:700}}>¥{ccTot.toLocaleString()}</span>
+                <span style={{fontSize:"18px",fontFamily:"'Space Mono',monospace",color:"#1abc9c",fontWeight:700}}>¥{ccAllItems.filter(f=>!thisCycle.overrides[f.id]?.hidden).flatMap(f=>getBDItems(f.id)).reduce((s,b)=>s+Number(b.amount),0).toLocaleString()}</span>
               </div>
             </div>
 
