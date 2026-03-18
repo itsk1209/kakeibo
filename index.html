@@ -294,8 +294,8 @@ function KakeiboApp() {
       <div style={{maxWidth:"600px",margin:"0 auto",padding:"0 14px"}}>
         {/* TABS */}
         <div style={{display:"flex",gap:"4px",padding:"12px 0",borderBottom:"1px solid #1a1a3a"}}>
-          {[["weekly","📊 週次"],["fixed","📌 固定費"],["memo","📝 メモ"]].map(([k,l])=>(
-            <button key={k} onClick={()=>setActiveTab(k)} style={{background:activeTab===k?"#2d2d5e":"transparent",border:activeTab===k?"1px solid #4d4d9e":"1px solid transparent",borderRadius:"8px",padding:"9px 14px",color:activeTab===k?"#c0b4ff":"#606080",cursor:"pointer",fontSize:"13px",flex:1,WebkitAppearance:"none"}}>{l}</button>
+          {[["weekly","📊 週次"],["fixed","📌 固定費"],["memo","📝 メモ"],["settings","⚙️"]].map(([k,l])=>(
+            <button key={k} onClick={()=>setActiveTab(k)} style={{background:activeTab===k?"#2d2d5e":"transparent",border:activeTab===k?"1px solid #4d4d9e":"1px solid transparent",borderRadius:"8px",padding:"9px 10px",color:activeTab===k?"#c0b4ff":"#606080",cursor:"pointer",fontSize:"13px",flex:k==="settings"?0.5:1,WebkitAppearance:"none"}}>{l}</button>
           ))}
         </div>
 
@@ -526,6 +526,46 @@ function KakeiboApp() {
             {memos.length===0&&<div style={{textAlign:"center",color:"#404060",padding:"40px",fontSize:"14px"}}>支払予定メモはまだありません</div>}
           </div>
         )}
+
+        {/* ===== SETTINGS ===== */}
+        {activeTab==="settings" && (
+          <div style={{padding:"14px 0"}}>
+            <h2 style={{margin:"0 0 20px",fontSize:"15px",color:"#a0a0d0"}}>⚙️ 設定</h2>
+
+            {/* PIN settings */}
+            <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid #2d2d4e",borderRadius:"12px",padding:"16px",marginBottom:"12px"}}>
+              <div style={{fontSize:"14px",color:"#c0b4ff",fontWeight:600,marginBottom:"4px"}}>🔒 PINロック</div>
+              <div style={{fontSize:"12px",color:"#6060a0",marginBottom:"16px"}}>アプリを開く際にPINコードで保護します</div>
+              <div style={{display:"flex",flexDirection:"column",gap:"10px"}}>
+                <button onClick={()=>{
+                  if(window.confirm("PINを変更しますか？\n次回起動時に新しいPINを設定します。")) {
+                    storage.set("kakeibo_pin","__reset__");
+                    window.location.reload();
+                  }
+                }} style={{...pBtn,justifyContent:"center",background:"linear-gradient(135deg,#2d3d8e,#3d5d9e)",border:"1px solid #4d6dae"}}>
+                  PINを変更する
+                </button>
+                <button onClick={()=>{
+                  if(window.confirm("PINロックを解除しますか？\nアプリが誰でも開けるようになります。")) {
+                    localStorage.removeItem("kakeibo_pin");
+                    alert("PINロックを解除しました");
+                  }
+                }} style={{background:"none",border:"1px solid #5e3d3d",color:"#a06060",borderRadius:"10px",padding:"10px 18px",cursor:"pointer",fontSize:"14px",WebkitAppearance:"none"}}>
+                  PINロックを解除する
+                </button>
+              </div>
+            </div>
+
+            {/* App info */}
+            <div style={{background:"rgba(255,255,255,0.03)",border:"1px solid #2d2d4e",borderRadius:"12px",padding:"16px"}}>
+              <div style={{fontSize:"14px",color:"#c0b4ff",fontWeight:600,marginBottom:"12px"}}>ℹ️ アプリ情報</div>
+              <div style={{fontSize:"12px",color:"#6060a0",lineHeight:"1.8"}}>
+                <div>家計簿アプリ - 25日起算サイクル管理</div>
+                <div>データはこのスマホ本体に保存されます</div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ===== MODALS ===== */}
@@ -644,8 +684,144 @@ function MemoCard({memo, onDelete, past}) {
   );
 }
 
+// ==================== PIN LOCK ====================
+function PinLock({ onUnlock }) {
+  const [pin, setPin] = useState("");
+  const [savedPin, setSavedPin] = useState(() => {
+    const r = storage.get("kakeibo_pin");
+    return r ? r.value : null;
+  });
+  const [mode, setMode] = useState(() => {
+    const r = storage.get("kakeibo_pin");
+    return r ? "enter" : "setup";
+  });
+  const [confirm, setConfirm] = useState("");
+  const [step, setStep] = useState("first"); // first | confirm
+  const [error, setError] = useState("");
+  const [shake, setShake] = useState(false);
+
+  const doShake = () => {
+    setShake(true);
+    setTimeout(() => setShake(false), 500);
+  };
+
+  const handleNum = (n) => {
+    if (mode === "enter") {
+      const next = pin + n;
+      setPin(next);
+      setError("");
+      if (next.length === 4) {
+        if (next === savedPin) {
+          setTimeout(() => onUnlock(), 150);
+        } else {
+          setTimeout(() => { doShake(); setPin(""); setError("PINが違います"); }, 150);
+        }
+      }
+    } else {
+      // setup mode
+      if (step === "first") {
+        const next = pin + n;
+        setPin(next);
+        if (next.length === 4) {
+          setTimeout(() => { setConfirm(next); setPin(""); setStep("confirm"); }, 150);
+        }
+      } else {
+        const next = pin + n;
+        setPin(next);
+        if (next.length === 4) {
+          if (next === confirm) {
+            storage.set("kakeibo_pin", confirm);
+            setTimeout(() => onUnlock(), 150);
+          } else {
+            setTimeout(() => { doShake(); setPin(""); setStep("first"); setConfirm(""); setError("一致しません。最初からやり直してください"); }, 150);
+          }
+        }
+      }
+    }
+  };
+
+  const handleDel = () => setPin(p => p.slice(0, -1));
+
+  const dots = Array.from({length:4}, (_,i) => (
+    <div key={i} style={{
+      width:"16px", height:"16px", borderRadius:"50%",
+      background: i < pin.length ? "#c0b4ff" : "transparent",
+      border: "2px solid " + (i < pin.length ? "#c0b4ff" : "#3d3d6e"),
+      transition:"all 0.15s"
+    }}/>
+  ));
+
+  const nums = [["1","2","3"],["4","5","6"],["7","8","9"],["","0","⌫"]];
+
+  return (
+    <div style={{
+      minHeight:"100vh", background:"linear-gradient(135deg,#0a0a1a,#0d0d2b,#0a0a1a)",
+      display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center",
+      fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif", padding:"24px"
+    }}>
+      <div style={{fontSize:"40px", marginBottom:"12px"}}>💴</div>
+      <h1 style={{margin:"0 0 4px", fontSize:"22px", color:"#c0b4ff", fontWeight:700}}>家計簿</h1>
+      <p style={{margin:"0 0 40px", fontSize:"12px", color:"#6060a0"}}>25日起算サイクル管理</p>
+
+      <p style={{margin:"0 0 8px", fontSize:"14px", color:"#a0a0c0"}}>
+        {mode === "enter" ? "PINを入力" :
+          step === "first" ? "新しいPINを入力（4桁）" : "PINをもう一度入力"}
+      </p>
+
+      {/* dots */}
+      <div style={{
+        display:"flex", gap:"16px", marginBottom:"12px",
+        animation: shake ? "shake 0.4s" : "none"
+      }}>
+        {dots}
+      </div>
+
+      {error && <p style={{margin:"0 0 16px", fontSize:"12px", color:"#e74c3c"}}>{error}</p>}
+      {!error && <div style={{height:"28px", marginBottom:"16px"}}/>}
+
+      {/* numpad */}
+      <div style={{display:"flex", flexDirection:"column", gap:"12px"}}>
+        {nums.map((row, ri) => (
+          <div key={ri} style={{display:"flex", gap:"12px"}}>
+            {row.map((n, ci) => (
+              <button key={ci} onClick={() => n === "⌫" ? handleDel() : n !== "" ? handleNum(n) : null}
+                style={{
+                  width:"72px", height:"72px", borderRadius:"50%",
+                  background: n === "" ? "transparent" : "rgba(255,255,255,0.06)",
+                  border: n === "" ? "none" : "1px solid #2d2d4e",
+                  color: n === "⌫" ? "#a0a0c0" : "#e0e0ff",
+                  fontSize: n === "⌫" ? "22px" : "24px",
+                  fontWeight: "600", cursor: n === "" ? "default" : "pointer",
+                  WebkitAppearance:"none",
+                  transition:"background 0.1s",
+                  fontFamily:"'Noto Sans JP',sans-serif"
+                }}>
+                {n}
+              </button>
+            ))}
+          </div>
+        ))}
+      </div>
+
+      <style>{`@keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-6px)}80%{transform:translateX(6px)}}`}</style>
+    </div>
+  );
+}
+
+// ==================== ROOT ====================
+function Root() {
+  const [unlocked, setUnlocked] = useState(false);
+  const pinVal = storage.get("kakeibo_pin");
+  // __reset__ = PINを再設定モードにする
+  if (pinVal?.value === "__reset__") {
+    localStorage.removeItem("kakeibo_pin");
+  }
+  if (!unlocked) return <PinLock onUnlock={() => setUnlocked(true)} />;
+  return <KakeiboApp />;
+}
+
 const root = ReactDOM.createRoot(document.getElementById('app'));
-root.render(<KakeiboApp/>);
+root.render(<Root/>);
 </script>
 
 <script>
