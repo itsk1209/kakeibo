@@ -150,6 +150,7 @@ function KakeiboApp() {
   const [modalAddMemo,   setModalAddMemo]   = useState(false);
   const [selectedDate,   setSelectedDate]   = useState(null);
   const [expandedBD,     setExpandedBD]     = useState({});
+  const [editingIncome,  setEditingIncome]  = useState(false);
 
   const [fExp,  setFExp]  = useState({date:"",amount:"",category:"食費",note:"",isBudget:false});
   const [fFixed,setFFixed]= useState({name:"",category:"その他",day:"",amount:"",hasBreakdown:false});
@@ -158,6 +159,7 @@ function KakeiboApp() {
   const [fOver, setFOver] = useState("");
   const [fMemo, setFMemo] = useState({date:"",title:"",amount:"",note:""});
   const [fBD,   setFBD]   = useState({fcId:null,name:"",amount:""});
+  const [incomeInput, setIncomeInput] = useState("");
 
   // load
   useEffect(()=>{
@@ -175,6 +177,31 @@ function KakeiboApp() {
   const thisCycle   = cycleStore[cycleKey] || {overrides:{},tempItems:[],breakdowns:{}};
   const updateCycle = (patch) => saveCycle({...cycleStore,[cycleKey]:{...thisCycle,...patch}});
 
+  // 収入
+  const cycleIncome = thisCycle.income || 0;
+  const saveIncome  = (v) => updateCycle({income: Number(v)||0});
+
+  // 固定費の「その月に適用される金額」を返す
+  // permanentChanges: [{fromYear, fromMonth, amount}] の配列で管理
+  const getEffectiveBaseAmount = (f) => {
+    const changes = f.permanentChanges || [];
+    if (!changes.length) return f.amount;
+    // cy/cm より前で最も新しい変更を探す
+    const applicable = changes
+      .filter(c => c.fromYear < cy || (c.fromYear === cy && c.fromMonth <= cm))
+      .sort((a,b) => (b.fromYear*12+b.fromMonth)-(a.fromYear*12+a.fromMonth));
+    return applicable.length ? applicable[0].amount : f.amount;
+  };
+
+  // 恒久変更を保存
+  const savePermanentChange = (f, newAmount) => {
+    const prev = f.permanentChanges || [];
+    // 同じ月の変更があれば上書き
+    const filtered = prev.filter(c => !(c.fromYear===cy && c.fromMonth===cm));
+    const updated = [...filtered, {fromYear:cy, fromMonth:cm, amount:Number(newAmount)}];
+    saveFixed(fixedCosts.map(fc => fc.id===f.id ? {...fc, permanentChanges:updated} : fc));
+  };
+
   const getBDItems = (id) => (thisCycle.breakdowns||{})[id]||[];
   const getBDTotal = (id) => { const its=getBDItems(id); return its.length?its.reduce((s,b)=>s+Number(b.amount),0):null; };
   const addBDItem  = (id,item) => updateCycle({breakdowns:{...(thisCycle.breakdowns||{}),[id]:[...getBDItems(id),item]}});
@@ -185,9 +212,10 @@ function KakeiboApp() {
 
   const effectiveFixed = [
     ...fixedCosts.filter(f=>!thisCycle.overrides[f.id]?.hidden).map(f=>{
+      const baseAmt = getEffectiveBaseAmount(f);
       const ov=thisCycle.overrides[f.id]?.amount;
       const bdt=f.hasBreakdown?getBDTotal(f.id):null;
-      return {...f, amount:bdt!==null?bdt:(ov??f.amount), isOverridden:ov!==undefined};
+      return {...f, amount:bdt!==null?bdt:(ov??baseAmt), isOverridden:ov!==undefined, baseAmt};
     }),
     ...(thisCycle.tempItems||[]).map(t=>({...t,isTemp:true})),
   ];
@@ -281,13 +309,31 @@ function KakeiboApp() {
             </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"8px",marginTop:"12px"}}>
-            {[["サイクル支出",cycleTotal,"#e74c3c"],["予算合計",cycleBudget,"#3498db"],["固定費合計",fixedTotal,"#9b59b6"]].map(([l,v,c])=>(
+            {[["サイクル支出",cycleTotal,"#e74c3c"],["固定費合計",fixedTotal,"#9b59b6"],["収入",cycleIncome,"#27ae60"]].map(([l,v,c])=>(
               <div key={l} style={{background:"rgba(255,255,255,0.04)",borderRadius:"10px",padding:"10px 10px",border:"1px solid #2d2d4e"}}>
                 <div style={{fontSize:"10px",color:"#6060a0",marginBottom:"3px"}}>{l}</div>
                 <div style={{fontSize:"15px",fontFamily:"'Space Mono',monospace",color:c,fontWeight:700}}>¥{v.toLocaleString()}</div>
               </div>
             ))}
           </div>
+          {/* 残高バー */}
+          {cycleIncome > 0 && (
+            <div style={{marginTop:"10px",background:"rgba(255,255,255,0.03)",borderRadius:"10px",padding:"10px 12px",border:"1px solid #2d2d4e"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"6px"}}>
+                <span style={{fontSize:"11px",color:"#6060a0"}}>残高（収入－固定費－支出）</span>
+                <span style={{fontSize:"15px",fontFamily:"'Space Mono',monospace",fontWeight:700,
+                  color:(cycleIncome-fixedTotal-cycleTotal)>=0?"#27ae60":"#e74c3c"}}>
+                  ¥{(cycleIncome-fixedTotal-cycleTotal).toLocaleString()}
+                </span>
+              </div>
+              <div style={{background:"#1a1a3a",borderRadius:"4px",height:"5px",overflow:"hidden"}}>
+                <div style={{height:"100%",borderRadius:"4px",
+                  width:`${Math.min(100,((fixedTotal+cycleTotal)/cycleIncome)*100)}%`,
+                  background:(cycleIncome-fixedTotal-cycleTotal)>=0?"linear-gradient(90deg,#9b59b6,#e74c3c)":"#e74c3c",
+                  transition:"width .5s"}}/>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -306,6 +352,36 @@ function KakeiboApp() {
               <h2 style={{margin:0,fontSize:"13px",color:"#a0a0d0"}}>{getCycleLabel(cy,cm)}</h2>
               <button onClick={()=>setModalAddExp(true)} style={pBtn}>＋ 支出追加</button>
             </div>
+
+            {/* 収入入力 */}
+            <div style={{background:"rgba(39,174,96,0.08)",border:"1px solid rgba(39,174,96,0.25)",borderRadius:"12px",padding:"12px 14px",marginBottom:"14px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <div>
+                  <div style={{fontSize:"12px",color:"#27ae60",fontWeight:600,marginBottom:"2px"}}>💰 今月の収入</div>
+                  {!editingIncome && <div style={{fontSize:"20px",fontFamily:"'Space Mono',monospace",color:"#27ae60",fontWeight:700}}>
+                    {cycleIncome>0?`¥${cycleIncome.toLocaleString()}`:"未入力"}
+                  </div>}
+                </div>
+                {!editingIncome && (
+                  <button onClick={()=>{setIncomeInput(cycleIncome>0?String(cycleIncome):"");setEditingIncome(true);}}
+                    style={{background:"rgba(39,174,96,0.2)",border:"1px solid rgba(39,174,96,0.4)",color:"#27ae60",borderRadius:"8px",padding:"8px 14px",cursor:"pointer",fontSize:"13px",WebkitAppearance:"none"}}>
+                    {cycleIncome>0?"変更":"入力"}
+                  </button>
+                )}
+              </div>
+              {editingIncome && (
+                <div style={{display:"flex",gap:"8px",alignItems:"center",marginTop:"8px"}}>
+                  <input type="number" value={incomeInput} onChange={e=>setIncomeInput(e.target.value)}
+                    placeholder="収入を入力" autoFocus
+                    style={{flex:1,background:"#0d0d1a",border:"1px solid rgba(39,174,96,0.4)",borderRadius:"8px",padding:"10px 12px",color:"#e0e0ff",fontSize:"16px",outline:"none"}}/>
+                  <button onClick={()=>{saveIncome(incomeInput);setEditingIncome(false);}}
+                    style={{background:"rgba(39,174,96,0.2)",border:"1px solid rgba(39,174,96,0.4)",color:"#27ae60",borderRadius:"8px",padding:"10px 14px",cursor:"pointer",fontSize:"14px",fontWeight:700,WebkitAppearance:"none"}}>保存</button>
+                  <button onClick={()=>setEditingIncome(false)}
+                    style={{background:"none",border:"1px solid #3d3d5e",color:"#606080",borderRadius:"8px",padding:"10px 12px",cursor:"pointer",fontSize:"13px",WebkitAppearance:"none"}}>✕</button>
+                </div>
+              )}
+            </div>
+
             {cycleBudget>0&&(
               <div style={{marginBottom:"14px"}}>
                 <div style={{display:"flex",justifyContent:"space-between",fontSize:"12px",color:"#8080a0",marginBottom:"4px"}}>
@@ -396,8 +472,10 @@ function KakeiboApp() {
                     const isHid=!!ov.hidden;
                     const bdItems=f.hasBreakdown?getBDItems(f.id):[];
                     const bdTot=bdItems.length?bdItems.reduce((s,b)=>s+Number(b.amount),0):null;
-                    const effAmt=f.hasBreakdown?(bdTot!==null?bdTot:(ov.amount??f.amount)):(ov.amount??f.amount);
+                    const baseAmt=getEffectiveBaseAmount(f);
+                    const effAmt=f.hasBreakdown?(bdTot!==null?bdTot:(ov.amount??baseAmt)):(ov.amount??baseAmt);
                     const isOvr=!f.hasBreakdown&&ov.amount!==undefined;
+                    const hasPerm=(f.permanentChanges||[]).some(c=>c.fromYear<cy||(c.fromYear===cy&&c.fromMonth<=cm));
                     const isExp=!!expandedBD[f.id];
                     const isTeal=!!f.hasBreakdown;
                     return (
@@ -410,6 +488,7 @@ function KakeiboApp() {
                               <div style={{fontSize:"10px",color:"#505070"}}>{f.category}</div>
                             </div>
                             {isOvr&&<span style={{fontSize:"10px",background:"rgba(243,156,18,0.15)",color:"#f39c12",borderRadius:"4px",padding:"1px 5px",flexShrink:0}}>今月変更</span>}
+                            {hasPerm&&!isOvr&&<span style={{fontSize:"10px",background:"rgba(39,174,96,0.15)",color:"#27ae60",borderRadius:"4px",padding:"1px 5px",flexShrink:0}}>変更済</span>}
                             {isHid&&<span style={{fontSize:"10px",background:"rgba(100,100,100,0.2)",color:"#606080",borderRadius:"4px",padding:"1px 5px",flexShrink:0}}>除外</span>}
                           </div>
                           <div style={{display:"flex",alignItems:"center",gap:"3px",flexShrink:0}}>
@@ -646,12 +725,25 @@ function KakeiboApp() {
         <button onClick={handleAddTemp} style={{...pBtn,width:"100%",justifyContent:"center",background:"linear-gradient(135deg,#8e5d00,#b07a10)",border:"1px solid #c09020"}}>追加</button>
       </Modal>
 
-      <Modal open={!!modalOverride} onClose={()=>{setModalOverride(null);setFOver("");}} title={`今月の金額を変更：${modalOverride?.name||""}`}>
-        <div style={{background:"rgba(243,156,18,0.06)",border:"1px solid rgba(243,156,18,0.15)",borderRadius:"8px",padding:"10px 12px",marginBottom:"14px",fontSize:"13px",color:"#c09040"}}>このサイクルのみ反映。元の金額 ¥{Number(modalOverride?.amount||0).toLocaleString()}</div>
-        <Field label="今月の金額（空欄でリセット）" value={fOver} onChange={setFOver} type="number" placeholder={String(modalOverride?.amount||"")}/>
-        <div style={{display:"flex",gap:"8px"}}>
-          <button onClick={()=>{setModalOverride(null);setFOver("");}} style={{flex:1,background:"transparent",border:"1px solid #3d3d5e",color:"#808090",borderRadius:"8px",padding:"12px",cursor:"pointer",fontSize:"14px",WebkitAppearance:"none"}}>キャンセル</button>
-          <button onClick={handleSaveOverride} style={{...pBtn,flex:2,justifyContent:"center",background:"linear-gradient(135deg,#7a5a00,#a07010)",border:"1px solid #b08020"}}>今月だけ変更</button>
+      <Modal open={!!modalOverride} onClose={()=>{setModalOverride(null);setFOver("");}} title={`金額を変更：${modalOverride?.name||""}`}>
+        <Field label="新しい金額" value={fOver} onChange={setFOver} type="number" placeholder={String(getEffectiveBaseAmount(modalOverride||{amount:0}))}/>
+        <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+          <button onClick={()=>{if(!modalOverride||!fOver)return;setOvr(modalOverride.id,{amount:Number(fOver)});setModalOverride(null);setFOver("");}}
+            style={{...pBtn,justifyContent:"center",background:"linear-gradient(135deg,#7a5a00,#a07010)",border:"1px solid #b08020"}}>
+            今月だけ変更
+          </button>
+          <button onClick={()=>{
+            if(!modalOverride||!fOver)return;
+            savePermanentChange(modalOverride, fOver);
+            setModalOverride(null); setFOver("");
+          }} style={{...pBtn,justifyContent:"center",background:"linear-gradient(135deg,#1a5a3a,#2a8a5a)",border:"1px solid #3aaa6a"}}>
+            {cy}年{cm+1}月から恒久変更
+          </button>
+          <div style={{fontSize:"11px",color:"#505070",textAlign:"center",padding:"0 8px"}}>
+            ※恒久変更：この月以降ずっと新金額が適用されます。過去の月は変わりません。
+          </div>
+          <button onClick={()=>{setModalOverride(null);setFOver("");}}
+            style={{background:"transparent",border:"1px solid #3d3d5e",color:"#808090",borderRadius:"8px",padding:"10px",cursor:"pointer",fontSize:"14px",WebkitAppearance:"none"}}>キャンセル</button>
         </div>
       </Modal>
 
